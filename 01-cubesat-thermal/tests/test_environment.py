@@ -26,7 +26,7 @@ class TestEnvironmentFluxes:
 
     def test_no_solar_in_eclipse(self, env, orb):
         """Aucun flux solaire pendant l'éclipse."""
-        t_eclipse = orb.T_orb * 0.85    # Milieu de l'éclipse pour beta=0
+        t_eclipse = orb.T_orb * 0.5    # Milieu de l'éclipse pour beta=0
         fluxes    = env.compute(t_eclipse, orb)
         total_solar = sum(f["solar"] for f in fluxes.values())
         assert total_solar == 0.0, f"Flux solaire non nul pendant éclipse : {total_solar}"
