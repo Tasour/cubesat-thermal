@@ -1,0 +1,104 @@
+# ============================================================
+# CubeSat 3U - Configuration Thermique Complète
+# ============================================================
+
+satellite:
+  name: "3U CubeSat LEO"
+  total_mass_kg: 4.0
+
+orbit:
+  altitude_km: 550
+  inclination_deg: 51.6
+  beta_angle_deg: 30.0
+
+simulation:
+  n_orbits: 5
+  n_points: 5000
+  n_warmup_orbits: 2
+  T_init_K: 280.0
+
+environment:
+  solar_constant_Wm2: 1361.0
+  earth_albedo: 0.30
+  earth_OLR_Wm2: 237.0
+  T_space_K: 3.0
+
+faces:
+  plus_X:
+    material: "painted_white"
+    alpha: 0.23
+    epsilon: 0.88
+    area_m2: 0.030
+    mass_kg: 0.08
+    cp_JkgK: 896.0
+  minus_X:
+    material: "painted_white"
+    alpha: 0.23
+    epsilon: 0.88
+    area_m2: 0.030
+    mass_kg: 0.08
+    cp_JkgK: 896.0
+  plus_Y:
+    material: "solar_panel"
+    alpha: 0.92
+    epsilon: 0.85
+    area_m2: 0.030
+    mass_kg: 0.10
+    cp_JkgK: 750.0
+  minus_Y:
+    material: "solar_panel"
+    alpha: 0.92
+    epsilon: 0.85
+    area_m2: 0.030
+    mass_kg: 0.10
+    cp_JkgK: 750.0
+  plus_Z:
+    material: "painted_white"
+    alpha: 0.23
+    epsilon: 0.88
+    area_m2: 0.010
+    mass_kg: 0.04
+    cp_JkgK: 896.0
+  minus_Z:
+    material: "painted_white"
+    alpha: 0.23
+    epsilon: 0.88
+    area_m2: 0.010
+    mass_kg: 0.04
+    cp_JkgK: 896.0
+
+internal_nodes:
+  structure:
+    material: "aluminum_6061"
+    mass_kg: 0.80
+    cp_JkgK: 896.0
+  obc_eps:
+    material: "pcb_components"
+    mass_kg: 0.30
+    cp_JkgK: 800.0
+  payload:
+    material: "optical_assembly"
+    mass_kg: 0.50
+    cp_JkgK: 520.0
+
+conductances_GL:
+  face_to_structure: 0.064
+  structure_to_obc: 0.427
+  structure_to_payload: 0.427
+  obc_to_payload: 0.005
+
+power_dissipation:
+  obc_W: 0.5
+  eps_sun_W: 0.5
+  eps_eclipse_W: 0.3
+  payload_sun_W: 2.0
+  payload_eclipse_W: 0.0
+  adcs_W: 0.2
+  radio_sun_W: 0.8
+  radio_eclipse_W: 0.0
+
+thermal_limits:
+  panels:     {min_C: -100, max_C: 120}
+  structure:  {min_C: -80,  max_C: 100}
+  obc_eps:    {min_C: -40,  max_C: 85}
+  payload:    {min_C: -20,  max_C: 60}
