@@ -656,10 +656,10 @@ def main():
         col_l, col_r = st.columns(2)
         with col_l:
             st.markdown("**6 faces extérieures** — directement exposées au Soleil et au vide")
-            st.plotly_chart(plot_face_temperatures(result, eclipse_periods, limits), use_container_width=True)
+            st.plotly_chart(plot_face_temperatures(result, eclipse_periods, limits), width='stretch')
         with col_r:
             st.markdown("**Composants internes** — protégés des faces, mais réchauffés par conduction et dissipation électronique")
-            st.plotly_chart(plot_internal_temperatures(result, eclipse_periods, limits), use_container_width=True)
+            st.plotly_chart(plot_internal_temperatures(result, eclipse_periods, limits), width='stretch')
 
         st.markdown("---")
         st.markdown("**Carte thermique globale** — vue synthétique de l'évolution de tous les nœuds")
@@ -670,7 +670,7 @@ Lisez de gauche à droite pour suivre l'évolution dans le temps.
 Les alternances soleil/éclipse créent des "vagues" horizontales répétitives.
 </div>
 """, unsafe_allow_html=True)
-        st.plotly_chart(plot_heatmap(result), use_container_width=True)
+        st.plotly_chart(plot_heatmap(result), width='stretch')
 
     # ── Onglet 2 : Analyse détaillée ─────────────────────────────────────────
     with tab2:
@@ -684,11 +684,11 @@ et la limite opérationnelle du composant. C'est <em>le</em> livrable central d'
 Une marge <strong>négative</strong> signifie que le composant mourrait en orbite.
 </div>
 """, unsafe_allow_html=True)
-        st.plotly_chart(plot_margins(result, config), use_container_width=True)
+        st.plotly_chart(plot_margins(result, config), width='stretch')
 
         st.subheader("Vue individuelle par nœud")
         st.caption("Chaque sous-graphique montre l'évolution de la température d'un seul nœud.")
-        st.plotly_chart(plot_node_overview(result, eclipse_periods), use_container_width=True)
+        st.plotly_chart(plot_node_overview(result, eclipse_periods), width='stretch')
 
         st.subheader("Propriétés de surface choisies")
         show_coating_explainer(alpha_p, epsilon_p)
@@ -702,7 +702,7 @@ Une marge <strong>négative</strong> signifie que le composant mourrait en orbit
                 "ε (émissivité)":   [0.88, 0.88, 0.05, 0.04, 0.85],
             })
             df_mat["ε/α"] = (df_mat["ε (émissivité)"] / df_mat["α (absorb. sol.)"]).round(2)
-            st.dataframe(df_mat, use_container_width=True, hide_index=True)
+            st.dataframe(df_mat, width='stretch', hide_index=True)
         with col_b:
             st.markdown("**Puissance interne**")
             show_power_explainer(p_obc, p_payload, p_radio)
@@ -721,11 +721,11 @@ Une marge <strong>négative</strong> signifie que le composant mourrait en orbit
                 return "background-color: #003d1a; color: #66ffaa"
             return ""
 
-        styled = df_margins.style.applymap(
+        styled = df_margins.style.map(
             highlight_margin,
             subset=["Marge froide [K]", "Marge chaude [K]"]
         )
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.dataframe(styled, width='stretch', hide_index=True)
 
         st.markdown("""
 **Légende des couleurs** :
