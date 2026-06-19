@@ -345,6 +345,408 @@ def build_summary_df(result, config):
     return pd.DataFrame(rows)
 
 
+# ─── 3D Visualisation animée ──────────────────────────────────────────────────
+
+def temp_to_color(T: float, T_min: float, T_max: float) -> str:
+    """
+    Mappe une température → couleur RGB (style RdYlBu_r).
+    Bleu froid → jaune médian → rouge chaud.
+    """
+    t = float(np.clip((T - T_min) / max(float(T_max - T_min), 1.0), 0.0, 1.0))
+    pts = [
+        (0.00, (49,  54, 149)),
+        (0.25, (116, 173, 209)),
+        (0.50, (255, 255, 191)),
+        (0.75, (253, 141,  60)),
+        (1.00, (215,  48,  39)),
+    ]
+    for i in range(len(pts) - 1):
+        t0, c0 = pts[i]
+        t1, c1 = pts[i + 1]
+        if t <= t1 + 1e-9:
+            f = (t - t0) / (t1 - t0)
+            r = int(c0[0] + f * (c1[0] - c0[0]))
+            g = int(c0[1] + f * (c1[1] - c0[1]))
+            b = int(c0[2] + f * (c1[2] - c0[2]))
+            return f"rgb({r},{g},{b})"
+    return "rgb(215,48,39)"
+
+
+def _orbit_xyz(altitude_km: float, beta_deg: float, t_seconds: np.ndarray):
+    """Positions 3D sur l'orbite circulaire + flag éclipse pour chaque instant."""
+    R_earth = 6371.0
+    mu      = 398600.4418
+    r       = R_earth + altitude_km
+    T_orb   = 2.0 * np.pi * np.sqrt(r ** 3 / mu)
+    beta    = np.radians(beta_deg)
+    theta   = 2.0 * np.pi * t_seconds / T_orb
+    x = r * np.cos(theta)
+    y = r * np.sin(theta) * np.cos(beta)
+    z = r * np.sin(theta) * np.sin(beta)
+    orb    = OrbitalParameters(altitude_km=altitude_km, beta_deg=beta_deg)
+    is_ecl = np.array([in_eclipse(float(ts), orb) for ts in t_seconds], dtype=bool)
+    return x, y, z, is_ecl
+
+
+def build_3d_animation(result, config, N_frames: int = 80) -> go.Figure:
+    """
+    Figure Plotly animée (▶ Play / ⏸ Pause + slider temporel) avec deux scènes 3D :
+      - Gauche : Terre + trajectoire orbitale colorée + satellite mobile
+      - Droite  : CubeSat 3U dont les faces et composants changent de couleur
+                  en fonction des températures issues de la simulation
+    """
+    altitude = config["orbit"]["altitude_km"]
+    beta_deg = config["orbit"]["beta_angle_deg"]
+    R_earth  = 6371.0
+    r_orb    = R_earth + altitude
+
+    # ── Sous-échantillonnage ──────────────────────────────────────────────────
+    fidxs  = np.linspace(0, len(result.t) - 1, N_frames, dtype=int)
+    t_secs = result.t[fidxs]
+    t_mins = result.t_min[fidxs]
+
+    # Positions du satellite aux instants des frames
+    xf, yf, zf, ecl = _orbit_xyz(altitude, beta_deg, t_secs)
+
+    # Trajectoire de fond (plus dense, statique)
+    t_bg                 = np.linspace(0.0, float(result.t[-1]), 400)
+    xb, yb, zb, ecl_bg  = _orbit_xyz(altitude, beta_deg, t_bg)
+    orb_col              = np.where(ecl_bg, 0.0, 1.0).tolist()
+
+    # ── Plage thermique globale ───────────────────────────────────────────────
+    T_min = float(result.T_C.min())
+    T_max = float(result.T_C.max())
+
+    # ── Géométrie CubeSat 3U (ratio 1:1:3) ───────────────────────────────────
+    HX, HY, HZ = 1.0, 1.0, 3.0
+    vx = np.array([-HX, +HX, +HX, -HX, -HX, +HX, +HX, -HX], dtype=float)
+    vy = np.array([-HY, -HY, +HY, +HY, -HY, -HY, +HY, +HY], dtype=float)
+    vz = np.array([-HZ, -HZ, -HZ, -HZ, +HZ, +HZ, +HZ, +HZ], dtype=float)
+
+    FACE_ORDER = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+    FACE_QUADS = {
+        "+X": [1, 5, 6, 2], "-X": [0, 3, 7, 4],
+        "+Y": [3, 2, 6, 7], "-Y": [0, 4, 5, 1],
+        "+Z": [4, 7, 6, 5], "-Z": [0, 1, 2, 3],
+    }
+    mi, mj, mk = [], [], []
+    for fn in FACE_ORDER:
+        a, b, c, d = FACE_QUADS[fn]
+        mi += [a, a]; mj += [b, c]; mk += [c, d]
+
+    def face_colors_at(full_idx: int):
+        cols = []
+        for fn in FACE_ORDER:
+            T   = float(result.T_C[NODE_NAMES.index(fn), full_idx])
+            col = temp_to_color(T, T_min, T_max)
+            cols += [col, col]    # 2 triangles par face
+        return cols
+
+    # Wireframe en un seul Scatter3d (NaN = séparateurs de segments)
+    EDGES = [(0,1),(1,2),(2,3),(3,0),(4,5),(5,6),(6,7),(7,4),(0,4),(1,5),(2,6),(3,7)]
+    wx, wy, wz = [], [], []
+    for a, b in EDGES:
+        wx += [vx[a], vx[b], None]
+        wy += [vy[a], vy[b], None]
+        wz += [vz[a], vz[b], None]
+
+    FACE_LBL_POS = {
+        "+X": ( HX+0.55, 0,        0       ),
+        "-X": (-HX-0.55, 0,        0       ),
+        "+Y": ( 0,        HY+0.55, 0       ),
+        "-Y": ( 0,       -HY-0.55, 0       ),
+        "+Z": ( 0,        0,        HZ+0.8 ),
+        "-Z": ( 0,        0,       -HZ-0.8 ),
+    }
+
+    INTERNALS = [
+        ("OBC/EPS",   0.0, 0.0, -1.5, "💻"),
+        ("Structure", 0.0, 0.0,  0.0, "🔩"),
+        ("Payload",   0.0, 0.0, +1.5, "📷"),
+    ]
+
+    # ── Construction de la figure de base ─────────────────────────────────────
+    fig = make_subplots(
+        rows=1, cols=2,
+        specs=[[{"type": "scene"}, {"type": "scene"}]],
+        column_widths=[0.55, 0.45],
+        subplot_titles=["🌍  Trajectoire orbitale", "🛰️  CubeSat — Thermique en temps réel"],
+        horizontal_spacing=0.01,
+    )
+
+    # ── SCENE 1 : Terre + orbite + satellite ──────────────────────────────────
+    # trace 0 — Terre (sphère)
+    n_e = 42
+    u_e = np.linspace(0, 2 * np.pi, n_e)
+    v_e = np.linspace(0, np.pi,     n_e)
+    xe_s = R_earth * np.outer(np.cos(u_e), np.sin(v_e))
+    ye_s = R_earth * np.outer(np.sin(u_e), np.sin(v_e))
+    ze_s = R_earth * np.outer(np.ones(n_e), np.cos(v_e))
+    fig.add_trace(go.Surface(
+        x=xe_s, y=ye_s, z=ze_s,
+        colorscale=[[0,"#091540"],[0.3,"#14459e"],[0.65,"#2580c9"],[1,"#59b5e8"]],
+        showscale=False, opacity=0.88, hoverinfo="skip", name="Terre",
+        lighting=dict(ambient=0.55, diffuse=0.75),
+    ), row=1, col=1)
+
+    # trace 1 — Trajectoire de fond (soleil/éclipse)
+    fig.add_trace(go.Scatter3d(
+        x=xb.tolist(), y=yb.tolist(), z=zb.tolist(),
+        mode="lines",
+        line=dict(color=orb_col, colorscale=[[0,"#0f1f3f"],[1,"#FFD700"]], width=3),
+        hoverinfo="skip", name="Orbite",
+    ), row=1, col=1)
+
+    # trace 2 — Position courante du satellite  ← ANIMÉ
+    fig.add_trace(go.Scatter3d(
+        x=[float(xf[0])], y=[float(yf[0])], z=[float(zf[0])],
+        mode="markers",
+        marker=dict(size=10, color="#ffffff", symbol="diamond",
+                    line=dict(color="#ff4444", width=2)),
+        name="🛰️ Satellite",
+        hovertemplate="<b>CubeSat</b><br>X=%{x:.0f} km<br>Y=%{y:.0f} km<extra></extra>",
+    ), row=1, col=1)
+
+    # trace 3 — Soleil (statique)
+    fig.add_trace(go.Scatter3d(
+        x=[r_orb * 1.78], y=[0], z=[0],
+        mode="markers+text", text=["☀️"],
+        textfont=dict(size=20), textposition="middle right",
+        marker=dict(size=14, color="#FFD700"),
+        name="Soleil", hoverinfo="skip",
+    ), row=1, col=1)
+
+    # ── SCENE 2 : CubeSat ────────────────────────────────────────────────────
+    init_idx = int(fidxs[0])
+
+    # trace 4 — Faces colorées  ← ANIMÉ
+    fig.add_trace(go.Mesh3d(
+        x=vx.tolist(), y=vy.tolist(), z=vz.tolist(),
+        i=mi, j=mj, k=mk,
+        facecolor=face_colors_at(init_idx),
+        flatshading=True, opacity=1.0, showscale=False, hoverinfo="skip",
+        name="Faces",
+        lighting=dict(ambient=0.7, diffuse=0.6, specular=0.2),
+        lightposition=dict(x=3, y=3, z=6),
+    ), row=1, col=2)
+
+    # trace 5 — Wireframe (statique)
+    fig.add_trace(go.Scatter3d(
+        x=wx, y=wy, z=wz, mode="lines",
+        line=dict(color="rgba(255,255,255,0.28)", width=2),
+        hoverinfo="skip", showlegend=False,
+    ), row=1, col=2)
+
+    # traces 6, 7, 8 — Composants internes  ← ANIMÉS
+    for name, xi, yi, zi, emoji in INTERNALS:
+        ni  = NODE_NAMES.index(name)
+        T0  = float(result.T_C[ni, init_idx])
+        col0 = temp_to_color(T0, T_min, T_max)
+        fig.add_trace(go.Scatter3d(
+            x=[xi], y=[yi], z=[zi],
+            mode="markers+text",
+            marker=dict(size=12, color=col0, opacity=0.95,
+                        line=dict(color="white", width=2)),
+            text=[f"  {emoji} {name}<br>  {T0:.1f}°C"],
+            textposition="middle right",
+            textfont=dict(color="white", size=9),
+            name=name,
+        ), row=1, col=2)
+
+    # traces 9-14 — Labels de chaque face  ← ANIMÉS
+    for fn in FACE_ORDER:
+        ni   = NODE_NAMES.index(fn)
+        T0   = float(result.T_C[ni, init_idx])
+        fx, fy, fz = FACE_LBL_POS[fn]
+        fig.add_trace(go.Scatter3d(
+            x=[fx], y=[fy], z=[fz],
+            mode="text",
+            text=[f"<b>{fn}</b><br>{T0:.1f}°C"],
+            textfont=dict(color="white", size=9),
+            showlegend=False, hoverinfo="skip",
+        ), row=1, col=2)
+
+    # trace 15 — Barre de couleur (trace fantôme)
+    fig.add_trace(go.Scatter3d(
+        x=[None], y=[None], z=[None], mode="markers",
+        marker=dict(
+            colorscale=[[0,"rgb(49,54,149)"],[0.25,"rgb(116,173,209)"],
+                        [0.5,"rgb(255,255,191)"],[0.75,"rgb(253,141,60)"],
+                        [1,"rgb(215,48,39)"]],
+            cmin=T_min, cmax=T_max, color=[T_min],
+            colorbar=dict(
+                title=dict(text="T [°C]", font=dict(color="white", size=11)),
+                tickfont=dict(color="white", size=10),
+                len=0.55, thickness=14, x=1.01,
+            ),
+            showscale=True,
+        ),
+        showlegend=False, hoverinfo="skip",
+    ), row=1, col=2)
+
+    # ── Frames d'animation ────────────────────────────────────────────────────
+    # Traces animées (dans l'ordre) :
+    # idx 2  → satellite marker
+    # idx 4  → cubesat faces (Mesh3d)
+    # idx 6  → OBC/EPS
+    # idx 7  → Structure
+    # idx 8  → Payload
+    # idx 9-14 → labels +X -X +Y -Y +Z -Z
+    ANIM_TRACES = [2, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+
+    frames       = []
+    slider_steps = []
+
+    for fi, (full_idx, t_m) in enumerate(zip(fidxs.tolist(), t_mins.tolist())):
+        full_idx = int(full_idx)
+        t_m      = float(t_m)
+        x_s, y_s, z_s = float(xf[fi]), float(yf[fi]), float(zf[fi])
+        is_ecl_f       = bool(ecl[fi])
+        orbit_n        = t_m / (result.T_orb / 60.0)
+        ecl_icon       = "🌑" if is_ecl_f else "☀️"
+        sat_col        = "#888888" if is_ecl_f else "#ffffff"
+
+        fdata = []
+
+        # trace 2 — satellite marker
+        fdata.append(go.Scatter3d(
+            x=[x_s], y=[y_s], z=[z_s],
+            marker=dict(size=10, color=sat_col, symbol="diamond",
+                        line=dict(color="#ff4444" if not is_ecl_f else "#553333", width=2)),
+        ))
+
+        # trace 4 — faces CubeSat
+        fdata.append(go.Mesh3d(facecolor=face_colors_at(full_idx)))
+
+        # traces 6-8 — composants internes
+        for name, xi, yi, zi, emoji in INTERNALS:
+            ni  = NODE_NAMES.index(name)
+            T   = float(result.T_C[ni, full_idx])
+            col = temp_to_color(T, T_min, T_max)
+            fdata.append(go.Scatter3d(
+                x=[xi], y=[yi], z=[zi],
+                marker=dict(color=col),
+                text=[f"  {emoji} {name}<br>  {T:.1f}°C"],
+            ))
+
+        # traces 9-14 — labels faces
+        for fn in FACE_ORDER:
+            ni  = NODE_NAMES.index(fn)
+            T   = float(result.T_C[ni, full_idx])
+            fx, fy, fz = FACE_LBL_POS[fn]
+            fdata.append(go.Scatter3d(
+                x=[fx], y=[fy], z=[fz],
+                text=[f"<b>{fn}</b><br>{T:.1f}°C"],
+            ))
+
+        frame_name = f"f{fi:03d}"
+        frames.append(go.Frame(
+            data=fdata,
+            traces=ANIM_TRACES,
+            name=frame_name,
+            layout=go.Layout(title=dict(
+                text=f"⏱ {t_m:.1f} min · Orbite {orbit_n:.2f} · {ecl_icon}",
+                font=dict(color="white", size=13),
+            )),
+        ))
+        slider_steps.append({
+            "args": [[frame_name], {"frame":{"duration":0,"redraw":True}, "mode":"immediate"}],
+            "label": f"{t_m:.0f}",
+            "method": "animate",
+        })
+
+    fig.frames = frames
+
+    # ── Mise en page globale ──────────────────────────────────────────────────
+    r_max = r_orb * 1.88
+    t0_str = f"{float(t_mins[0]):.1f}"
+
+    fig.update_layout(
+        paper_bgcolor="#04040f",
+        plot_bgcolor="#04040f",
+        font=dict(color="white"),
+        height=660,
+        margin=dict(l=0, r=70, t=80, b=100),
+        title=dict(
+            text=f"⏱ {t0_str} min · Orbite 0.00 · ☀️",
+            font=dict(color="white", size=13),
+            x=0.5,
+        ),
+        # Scène 1 : orbite
+        scene=dict(
+            bgcolor="#04040f",
+            xaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[-r_max, r_max]),
+            yaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[-r_max, r_max]),
+            zaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[-r_max, r_max]),
+            aspectmode="cube",
+            camera=dict(up=dict(x=0,y=0,z=1), eye=dict(x=1.45,y=1.45,z=0.7)),
+        ),
+        # Scène 2 : CubeSat
+        scene2=dict(
+            bgcolor="#04040f",
+            xaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[-HX*3.2, HX*3.2]),
+            yaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[-HY*3.2, HY*3.2]),
+            zaxis=dict(showticklabels=False, showgrid=False, zeroline=False, range=[-HZ*1.75, HZ*1.75]),
+            aspectmode="manual",
+            aspectratio=dict(x=1, y=1, z=3),
+            camera=dict(up=dict(x=0,y=0,z=1), eye=dict(x=2.1,y=2.1,z=0.65)),
+        ),
+        # Boutons Play / Pause
+        updatemenus=[dict(
+            type="buttons",
+            showactive=False,
+            y=-0.10, x=0.0, xanchor="left", yanchor="top",
+            pad=dict(t=5, r=10),
+            bgcolor="#1a1a3a", bordercolor="#4a4aaa",
+            font=dict(color="white", size=13),
+            buttons=[
+                dict(
+                    label="▶  Play",
+                    method="animate",
+                    args=[None, {
+                        "frame":       {"duration": 90, "redraw": True},
+                        "fromcurrent": True,
+                        "transition":  {"duration": 0},
+                        "mode":        "immediate",
+                    }],
+                ),
+                dict(
+                    label="⏸  Pause",
+                    method="animate",
+                    args=[[None], {
+                        "frame": {"duration": 0, "redraw": False},
+                        "mode":  "immediate",
+                    }],
+                ),
+            ],
+        )],
+        # Slider temporel
+        sliders=[dict(
+            active=0,
+            currentvalue=dict(
+                prefix="t = ",
+                suffix=" min",
+                font=dict(color="white", size=12),
+                visible=True,
+                xanchor="center",
+            ),
+            pad=dict(b=10, t=55),
+            len=0.82, x=0.09, y=0,
+            font=dict(color="white", size=9),
+            bgcolor="#1a1a3a",
+            bordercolor="#3a3a6a",
+            tickcolor="white",
+            steps=slider_steps,
+        )],
+        legend=dict(
+            font=dict(color="white", size=10),
+            bgcolor="rgba(0,0,0,0.45)",
+            x=0.0, y=1.0,
+        ),
+    )
+    return fig
+
+
 # ─── Sections pédagogiques ────────────────────────────────────────────────────
 
 def show_intro_card():
@@ -593,7 +995,7 @@ def main():
     # ── Métriques rapides ────────────────────────────────────────────────────
     st.subheader("📈 Résumé de la simulation")
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col_dt = st.columns(5)
     col1.metric(
         "Période orbitale",
         f"{result.T_orb/60:.1f} min",
@@ -620,7 +1022,7 @@ def main():
         f"{summary['+Y']['delta_T']:.1f} K",
         help="Amplitude thermique de la face +Y sur un cycle orbital. Une grande amplitude = contraintes mécaniques sur les matériaux."
     )
-    col5.metric(
+    col_dt.metric(
         "ΔT OBC/EPS",
         f"{summary['OBC/EPS']['delta_T']:.1f} K",
         help="Amplitude thermique de l'électronique. À minimiser pour la fiabilité des composants."
@@ -641,11 +1043,12 @@ def main():
     st.divider()
 
     # ── Onglets principaux ───────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 Graphiques",
         "🔬 Analyse détaillée",
         "📋 Tableau des marges",
         "🎓 Comprendre la physique",
+        "🌍 Vue 3D animée",
     ])
 
     # ── Onglet 1 : Graphiques principaux ─────────────────────────────────────
@@ -845,6 +1248,52 @@ Avec :
 
 Ce système de **9 équations couplées et non-linéaires** (à cause de T⁴) est résolu numériquement
 par la méthode **Runge-Kutta 4/5** (SciPy), pas à pas dans le temps.
+        """)
+
+    # ── Onglet 5 : Vue 3D animée ─────────────────────────────────────────────
+    with tab5:
+        st.markdown("""
+<div class="info-box">
+🎬 <strong>Visualisation 3D animée</strong><br><br>
+La scène de <strong>gauche</strong> montre la trajectoire orbitale autour de la Terre.
+Les portions <strong>jaunes</strong> sont en plein soleil, les portions <strong>sombres</strong> correspondent aux éclipses.<br>
+La scène de <strong>droite</strong> montre le CubeSat 3U en vue éclatée : chaque face et chaque composant interne
+change de couleur selon sa température simulée — du <span style="color:#7595d4"><strong>bleu froid</strong></span>
+au <span style="color:#e87070"><strong>rouge chaud</strong></span>.<br><br>
+▶ Cliquez sur <strong>Play</strong> pour lancer l'animation, ou glissez le curseur pour naviguer manuellement.
+</div>
+""", unsafe_allow_html=True)
+
+        # Clé de cache basée sur les paramètres de simulation courants
+        anim_key = (altitude, beta, n_orbits, alpha_p, epsilon_p, p_obc, p_payload, p_radio)
+
+        if st.session_state.get("anim_key") != anim_key or "anim_fig" not in st.session_state:
+            with st.spinner("🔄 Construction de la visualisation 3D (calcul des positions orbitales + frames d'animation)…"):
+                fig_3d = build_3d_animation(result, config, N_frames=80)
+                st.session_state["anim_fig"] = fig_3d
+                st.session_state["anim_key"] = anim_key
+        else:
+            fig_3d = st.session_state["anim_fig"]
+
+        st.plotly_chart(fig_3d, width="stretch")
+
+        # Légende des couleurs
+        col_leg1, col_leg2, col_leg3, col_leg4, col_leg5 = st.columns(5)
+        col_leg1.markdown("<div style='background:rgb(49,54,149);border-radius:4px;padding:6px 10px;text-align:center;color:white;font-size:12px'>🥶 Très froid</div>", unsafe_allow_html=True)
+        col_leg2.markdown("<div style='background:rgb(116,173,209);border-radius:4px;padding:6px 10px;text-align:center;color:#111;font-size:12px'>❄️ Froid</div>", unsafe_allow_html=True)
+        col_leg3.markdown("<div style='background:rgb(255,255,191);border-radius:4px;padding:6px 10px;text-align:center;color:#333;font-size:12px'>🌡️ Moyen</div>", unsafe_allow_html=True)
+        col_leg4.markdown("<div style='background:rgb(253,141,60);border-radius:4px;padding:6px 10px;text-align:center;color:#111;font-size:12px'>🔥 Chaud</div>", unsafe_allow_html=True)
+        col_leg5.markdown("<div style='background:rgb(215,48,39);border-radius:4px;padding:6px 10px;text-align:center;color:white;font-size:12px'>🌋 Très chaud</div>", unsafe_allow_html=True)
+
+        st.markdown("---")
+        st.markdown("""
+**Comment lire la visualisation :**
+- 💎 Le **diamant blanc** sur l'orbite = position actuelle du satellite
+- Le diamant devient **grisé** lors des éclipses (absence de Soleil)
+- La trajectoire **jaune** = satellite au soleil &nbsp;|&nbsp; **sombre** = éclipse
+- Les faces **+X/−X/+Y/−Y** sont les faces latérales (portent les panneaux solaires)
+- **+Z/−Z** sont les faces haut (zénith) et bas (nadir, pointé vers la Terre)
+- 💻 **OBC/EPS**, 🔩 **Structure**, 📷 **Payload** = composants internes
         """)
 
     st.caption("Simulation thermique CubeSat 3U · Modèle nodal 9 nœuds · Runge-Kutta 4/5 · SciPy")
